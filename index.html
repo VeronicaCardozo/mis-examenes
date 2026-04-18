@@ -568,13 +568,20 @@
       </div>
     </div>
 
+    <div style="background:var(--surface);border-radius:var(--radius);padding:18px;border:1px solid rgba(255,255,255,0.05);margin-bottom:16px;">
+      <p style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:6px;color:var(--accent);">🔔 Notificaciones con sonido</p>
+      <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:14px;">Activá las notificaciones para recibir alertas automáticas con sonido el día del examen, el día anterior y varios días antes.</p>
+      <div id="notif-status" style="font-size:12px;color:var(--text3);margin-bottom:10px;"></div>
+      <button class="btn-save" id="btn-notif" onclick="activarNotificaciones()" style="margin-top:0;">Activar notificaciones</button>
+    </div>
+
     <div style="background:var(--surface);border-radius:var(--radius);padding:18px;border:1px solid rgba(255,255,255,0.05);">
-      <p style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:10px;color:var(--accent);">Instalá la app en tu celu</p>
-      <p style="font-size:13px;color:var(--text2);line-height:1.7;">
-        <strong style="color:var(--text);">Android:</strong> Menú del navegador → "Añadir a pantalla de inicio"<br>
-        <strong style="color:var(--text);">iPhone:</strong> Botón compartir → "Añadir a pantalla de inicio"<br><br>
-        Así aparece el ícono como si fuera una app real.
-      </p>
+      <p style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:10px;color:var(--accent);">Hora de notificación diaria</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <p style="font-size:13px;color:var(--text2);">¿A qué hora querés recibir las alertas?</p>
+        <input type="time" id="cfg-hora-notif" value="08:00" onchange="guardarConfig()" style="width:110px;" />
+      </div>
+      <p style="font-size:11px;color:var(--text3);margin-top:8px;">Abrí la app a esa hora para que se disparen las notificaciones del día.</p>
     </div>
   </div>
 </main>
@@ -716,6 +723,78 @@ function renderLista() {
   }).join('');
 }
 
+function eliminar(idx) {
+  if(!confirm('¿Eliminar este examen?'))return;
+  examenes.splice(idx,1);
+  guardarDatos();
+  renderLista();
+  renderAlertas();
+}
+
+// NOTIFICACIONES
+let swReg = null;
+
+async function activarNotificaciones() {
+  if (!('Notification' in window)) {
+    toast('Tu navegador no soporta notificaciones'); return;
+  }
+  if (!('serviceWorker' in navigator)) {
+    toast('Necesitás instalar la app primero'); return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') {
+    toast('✅ Notificaciones activadas');
+    actualizarEstadoNotif();
+    enviarExamenesAlSW();
+    // Test inmediato
+    if (swReg) {
+      swReg.showNotification('✅ Notificaciones activadas', {
+        body: 'Vas a recibir alertas antes de cada examen.',
+        icon: './icon-192.png',
+        vibrate: [200, 100, 200]
+      });
+    }
+  } else if (perm === 'denied') {
+    toast('❌ Permiso denegado. Activalo en ajustes del celu.');
+    document.getElementById('notif-status').textContent = '❌ Permiso denegado. Andá a Ajustes > Apps > Chrome > Notificaciones para activarlo.';
+  }
+}
+
+function actualizarEstadoNotif() {
+  const el = document.getElementById('notif-status');
+  const btn = document.getElementById('btn-notif');
+  if (!('Notification' in window)) {
+    el.textContent = '⚠️ Tu navegador no soporta notificaciones.'; return;
+  }
+  if (Notification.permission === 'granted') {
+    el.textContent = '✅ Notificaciones activadas — vas a recibir alertas automáticas.';
+    el.style.color = 'var(--success)';
+    btn.textContent = 'Reactivar / Probar notificación';
+    btn.style.background = 'rgba(46,196,182,0.15)';
+    btn.style.color = 'var(--success)';
+    btn.style.border = '1px solid rgba(46,196,182,0.4)';
+  } else if (Notification.permission === 'denied') {
+    el.textContent = '❌ Permiso denegado. Activalo en Ajustes del celu.';
+    el.style.color = '#f72585';
+    btn.textContent = 'Cómo activarlo manualmente';
+    btn.onclick = () => toast('Ajustes > Apps > Chrome > Notificaciones > Activar');
+  } else {
+    el.textContent = 'Aún no activaste las notificaciones.';
+  }
+}
+
+function enviarExamenesAlSW() {
+  if (swReg && swReg.active) {
+    swReg.active.postMessage({
+      type: 'SCHEDULE_CHECK',
+      examenes,
+      config
+    });
+  }
+}
+
+// Sobreescribir agregarExamen para también actualizar SW
+const _agregarOriginal = agregarExamen;
 function agregarExamen() {
   const materia=document.getElementById('inp-materia').value.trim();
   const fecha=document.getElementById('inp-fecha').value;
@@ -732,15 +811,8 @@ function agregarExamen() {
   ['inp-materia','inp-fecha','inp-hora','inp-aula','inp-unidades','inp-notas'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('inp-modo').value='';
   toast('✅ Examen guardado');
+  enviarExamenesAlSW();
   showTab('alertas');
-}
-
-function eliminar(idx) {
-  if(!confirm('¿Eliminar este examen?'))return;
-  examenes.splice(idx,1);
-  guardarDatos();
-  renderLista();
-  renderAlertas();
 }
 
 // Init
@@ -752,7 +824,27 @@ document.getElementById('today-chip').textContent=d.toLocaleDateString('es-AR',{
 renderAlertas();
 
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('sw.js').catch(()=>{});
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    swReg = reg;
+    actualizarEstadoNotif();
+    // Enviar exámenes al SW para que pueda notificar
+    if (Notification.permission === 'granted') enviarExamenesAlSW();
+  }).catch(()=>{});
+}
+
+// Notificar al abrir la app si tiene permiso
+if (Notification.permission === 'granted') {
+  const ahora = new Date();
+  const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+  examenes.forEach(ex => {
+    const dias = Math.round((new Date(ex.fecha + 'T00:00:00') - hoy) / 86400000);
+    const key = 'notif-app-' + ex.fecha + '-' + new Date().toISOString().split('T')[0];
+    if (!localStorage.getItem(key)) {
+      if (dias === 0 || dias === 1 || (dias > 1 && dias <= config.dias)) {
+        localStorage.setItem(key, '1');
+      }
+    }
+  });
 }
 </script>
 </body>
